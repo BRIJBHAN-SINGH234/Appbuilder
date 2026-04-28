@@ -3,10 +3,15 @@ plugins {
 }
 
 android {
-    namespace '__PACKAGE_ID__'
+    // namespace is the package where the R class is generated.
+    // It must match the Java source package (com.dotsquares.mobileapp).
+    // Do NOT make this dynamic — applicationId below handles the user's
+    // chosen package id for Play Store identity.
+    namespace 'com.dotsquares.mobileapp'
     compileSdk 34
 
     defaultConfig {
+        // The Play Store / device package identity. User-configurable per-build.
         applicationId '__PACKAGE_ID__'
         minSdk 23                  // Android 6.0+ — covers ~98% of active devices
         targetSdk 34
