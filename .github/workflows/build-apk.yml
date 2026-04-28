@@ -1,0 +1,258 @@
+name: Build Android APK / AAB (${{ inputs.dispatch_id }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      dispatch_id:
+        description: 'Magento dispatch UUID (used to correlate the run back to the admin job)'
+        required: true
+      build_type:
+        description: 'apk | aab | both'
+        required: true
+        default: 'apk'
+      app_name:
+        description: 'App display name'
+        required: true
+        default: 'My Store'
+      package_id:
+        description: 'Android package id (com.merchant.app)'
+        required: true
+        default: 'com.example.mystore'
+      version_name:
+        description: 'Semantic version (1.0.0)'
+        required: true
+        default: '1.0.0'
+      version_code:
+        description: 'Integer build number (1, 2, 3, ...)'
+        required: true
+        default: '1'
+      config_b64:
+        description: 'Base64-encoded JSON of full runtime config (icon URL, store URL, colors, flags). The workflow decodes and writes this to app/src/main/assets/config.json.'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout android-template repo
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install ImageMagick (for icon resizing)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick
+
+      - name: Decode runtime config + save snapshot
+        id: cfg
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/assets
+          echo '${{ inputs.config_b64 }}' | base64 -d > app/src/main/assets/config.json
+          echo "Decoded config:"
+          jq . app/src/main/assets/config.json || cat app/src/main/assets/config.json
+
+          ICON_URL=$(jq -r '.branding.app_icon_url // ""' app/src/main/assets/config.json)
+          SPLASH_URL=$(jq -r '.branding.splash_image_url // ""' app/src/main/assets/config.json)
+          STORE_URL=$(jq -r '.runtime.store_url' app/src/main/assets/config.json)
+          THEME=$(jq -r '.branding.theme_color' app/src/main/assets/config.json)
+          SPLASH_BG=$(jq -r '.branding.splash_bg_color' app/src/main/assets/config.json)
+          UA_SUFFIX=$(jq -r '.runtime.user_agent_suffix' app/src/main/assets/config.json)
+
+          {
+            echo "icon_url=$ICON_URL"
+            echo "splash_url=$SPLASH_URL"
+            echo "store_url=$STORE_URL"
+            echo "theme_color=$THEME"
+            echo "splash_bg_color=$SPLASH_BG"
+            echo "user_agent_suffix=$UA_SUFFIX"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Patch placeholders in source files
+        env:
+          PACKAGE_ID:        ${{ inputs.package_id }}
+          VERSION_NAME:      ${{ inputs.version_name }}
+          VERSION_CODE:      ${{ inputs.version_code }}
+          APP_NAME:          ${{ inputs.app_name }}
+          STORE_URL:         ${{ steps.cfg.outputs.store_url }}
+          THEME_COLOR:       ${{ steps.cfg.outputs.theme_color }}
+          SPLASH_BG_COLOR:   ${{ steps.cfg.outputs.splash_bg_color }}
+          USER_AGENT_SUFFIX: ${{ steps.cfg.outputs.user_agent_suffix }}
+        run: |
+          set -euo pipefail
+          # Escape values for sed safety
+          esc() { printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'; }
+
+          for f in \
+            app/build.gradle \
+            app/src/main/res/values/strings.xml \
+            app/src/main/res/values/colors.xml \
+            app/src/main/AndroidManifest.xml \
+            app/src/main/assets/config.json
+          do
+            sed -i \
+              -e "s/__PACKAGE_ID__/$(esc "$PACKAGE_ID")/g" \
+              -e "s/__VERSION_NAME__/$(esc "$VERSION_NAME")/g" \
+              -e "s/__VERSION_CODE__/$(esc "$VERSION_CODE")/g" \
+              -e "s/__APP_NAME__/$(esc "$APP_NAME")/g" \
+              -e "s/__STORE_URL__/$(esc "$STORE_URL")/g" \
+              -e "s/__THEME_COLOR__/$(esc "$THEME_COLOR")/g" \
+              -e "s/__SPLASH_BG_COLOR__/$(esc "$SPLASH_BG_COLOR")/g" \
+              -e "s/__USER_AGENT_SUFFIX__/$(esc "$USER_AGENT_SUFFIX")/g" \
+              "$f"
+          done
+          echo "Patched files:"
+          grep -H -E '^applicationId|^.*android:label|theme_color|splash_bg' \
+              app/build.gradle \
+              app/src/main/res/values/strings.xml \
+              app/src/main/res/values/colors.xml || true
+
+      - name: Generate app icons from URL (if provided)
+        if: steps.cfg.outputs.icon_url != ''
+        run: |
+          set -euo pipefail
+          curl -fsSL "${{ steps.cfg.outputs.icon_url }}" -o /tmp/icon-source.png
+          identify /tmp/icon-source.png
+
+          # Square crop the source to make sure all sizes look good
+          convert /tmp/icon-source.png -resize 1024x1024^ -gravity center -extent 1024x1024 /tmp/icon-square.png
+
+          declare -A SIZES=(
+            [mdpi]=48 [hdpi]=72 [xhdpi]=96 [xxhdpi]=144 [xxxhdpi]=192
+          )
+          for density in "${!SIZES[@]}"; do
+            size=${SIZES[$density]}
+            mkdir -p "app/src/main/res/mipmap-$density"
+            convert /tmp/icon-square.png -resize "${size}x${size}" "app/src/main/res/mipmap-$density/ic_launcher.png"
+            convert /tmp/icon-square.png -resize "${size}x${size}" \
+                \( +clone -alpha extract -draw "fill black polygon 0,0 0,${size} ${size},0 fill white circle $((size/2)),$((size/2)) $((size/2)),0" -alpha off -compose CopyOpacity -composite \) \
+                -compose CopyOpacity -composite \
+                "app/src/main/res/mipmap-$density/ic_launcher_round.png"
+          done
+          echo "Generated icons:"
+          find app/src/main/res/mipmap-* -name 'ic_launcher*.png' -exec identify {} \;
+
+      - name: Generate fallback icons (if no icon URL provided)
+        if: steps.cfg.outputs.icon_url == ''
+        env:
+          THEME_COLOR: ${{ steps.cfg.outputs.theme_color }}
+          APP_NAME:    ${{ inputs.app_name }}
+        run: |
+          set -euo pipefail
+          INITIAL=$(echo "$APP_NAME" | head -c 1 | tr '[:lower:]' '[:upper:]')
+          declare -A SIZES=(
+            [mdpi]=48 [hdpi]=72 [xhdpi]=96 [xxhdpi]=144 [xxxhdpi]=192
+          )
+          for density in "${!SIZES[@]}"; do
+            size=${SIZES[$density]}
+            mkdir -p "app/src/main/res/mipmap-$density"
+            convert -size ${size}x${size} "xc:${THEME_COLOR}" \
+              -gravity center -fill white -font Helvetica-Bold \
+              -pointsize $((size / 2)) -annotate +0+0 "$INITIAL" \
+              "app/src/main/res/mipmap-$density/ic_launcher.png"
+            cp "app/src/main/res/mipmap-$density/ic_launcher.png" \
+               "app/src/main/res/mipmap-$density/ic_launcher_round.png"
+          done
+
+      - name: Restore signing keystore from secrets
+        env:
+          KEYSTORE_BASE64:    ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD:  ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:          ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:       ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
+            echo "::warning::KEYSTORE_BASE64 secret not set — generating one-time DEBUG keystore."
+            echo "::warning::This APK will NOT be installable as an upgrade to a Play Store-signed app."
+            keytool -genkey -v \
+              -keystore /tmp/release.keystore \
+              -alias dsmobileapp \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass dsmobileapp -keypass dsmobileapp \
+              -dname "CN=DSMobileApp, OU=Auto, O=Dotsquares, L=Auto, S=Auto, C=IN"
+            echo "KEYSTORE_FILE=/tmp/release.keystore"           >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=dsmobileapp"                 >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=dsmobileapp"                          >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=dsmobileapp"                       >> "$GITHUB_ENV"
+          else
+            echo "$KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
+            echo "KEYSTORE_FILE=/tmp/release.keystore"           >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"          >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=$KEY_ALIAS"                          >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$KEY_PASSWORD"                    >> "$GITHUB_ENV"
+          fi
+
+      - name: Generate gradle wrapper (if missing)
+        run: |
+          if [[ ! -x ./gradlew ]]; then
+            gradle wrapper --gradle-version 8.5 --distribution-type bin
+          fi
+
+      - name: Build APK (release)
+        if: inputs.build_type == 'apk' || inputs.build_type == 'both'
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Build AAB (release)
+        if: inputs.build_type == 'aab' || inputs.build_type == 'both'
+        run: ./gradlew --no-daemon bundleRelease
+
+      - name: Stage outputs
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [[ -f app/build/outputs/apk/release/app-release.apk ]]; then
+            cp app/build/outputs/apk/release/app-release.apk \
+               "out/${{ inputs.package_id }}-${{ inputs.version_name }}-${{ inputs.version_code }}.apk"
+          fi
+          if [[ -f app/build/outputs/bundle/release/app-release.aab ]]; then
+            cp app/build/outputs/bundle/release/app-release.aab \
+               "out/${{ inputs.package_id }}-${{ inputs.version_name }}-${{ inputs.version_code }}.aab"
+          fi
+          cp app/src/main/assets/config.json out/build-config.json
+          ls -lh out/
+          (cd out && sha256sum *.apk *.aab build-config.json 2>/dev/null > SHA256SUMS) || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build
+          path: out/
+          retention-days: 30
+          compression-level: 0
+
+      - name: Notify Magento (optional webhook)
+        if: always() && env.WEBHOOK_URL != ''
+        env:
+          WEBHOOK_URL:    ${{ secrets.MAGENTO_WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.MAGENTO_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          STATUS="${{ job.status }}"
+          PAYLOAD=$(jq -nc \
+            --arg id "${{ inputs.dispatch_id }}" \
+            --arg run "${{ github.run_id }}" \
+            --arg status "$STATUS" \
+            --arg ts "$(date -u +%FT%TZ)" \
+            '{dispatch_id: $id, github_run_id: ($run|tonumber), status: $status, timestamp: $ts}')
+          if [[ -n "${WEBHOOK_SECRET:-}" ]]; then
+            SIG="sha256=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -binary | xxd -p -c 256)"
+            curl -fsS -X POST "$WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -H "X-Hub-Signature-256: $SIG" \
+              -d "$PAYLOAD" || echo "Webhook failed (non-fatal)"
+          else
+            curl -fsS -X POST "$WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -d "$PAYLOAD" || echo "Webhook failed (non-fatal)"
+          fi
