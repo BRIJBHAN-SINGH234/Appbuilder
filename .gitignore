@@ -1,0 +1,15 @@
+# Built files
+build/
+.gradle/
+local.properties
+*.iml
+.idea/
+
+# Generated icons (regenerated each build by workflow)
+app/src/main/res/mipmap-*/ic_launcher.png
+app/src/main/res/mipmap-*/ic_launcher_round.png
+
+# Keystore (kept in GitHub Secrets, never committed)
+*.keystore
+*.jks
+key.properties

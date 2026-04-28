@@ -1,0 +1,21 @@
+{
+    "_comment": "This file is replaced at build time by the GitHub Actions workflow. The content here is just a fallback if the workflow patch step is skipped.",
+    "app": {
+        "name": "__APP_NAME__",
+        "package_id": "__PACKAGE_ID__",
+        "version_name": "__VERSION_NAME__",
+        "version_code": __VERSION_CODE__
+    },
+    "branding": {
+        "theme_color": "__THEME_COLOR__",
+        "splash_bg_color": "__SPLASH_BG_COLOR__",
+        "status_bar_style": "default"
+    },
+    "runtime": {
+        "store_url": "__STORE_URL__",
+        "enable_pull_to_refresh": true,
+        "enable_offline_page": true,
+        "user_agent_suffix": "__USER_AGENT_SUFFIX__",
+        "allow_external_urls": false
+    }
+}

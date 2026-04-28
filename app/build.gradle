@@ -1,0 +1,62 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace '__PACKAGE_ID__'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId '__PACKAGE_ID__'
+        minSdk 23                  // Android 6.0+ — covers ~98% of active devices
+        targetSdk 34
+        versionCode __VERSION_CODE__
+        versionName '__VERSION_NAME__'
+    }
+
+    signingConfigs {
+        release {
+            // Populated at CI time from environment variables.
+            // For local builds, drop a debug keystore at app/debug.keystore
+            // and switch buildType.release.signingConfig accordingly.
+            if (System.getenv('KEYSTORE_FILE')) {
+                storeFile     file(System.getenv('KEYSTORE_FILE'))
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias      System.getenv('KEY_ALIAS')
+                keyPassword   System.getenv('KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig System.getenv('KEYSTORE_FILE') ? signingConfigs.release : null
+        }
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix   '-DEBUG'
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    bundle {
+        language { enableSplit = true }
+        density  { enableSplit = true }
+        abi      { enableSplit = true }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+    implementation 'androidx.webkit:webkit:1.11.0'
+    implementation 'com.google.android.material:material:1.12.0'
+}
